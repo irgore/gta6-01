@@ -2,415 +2,474 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GTA VI — Vice City Browser</title>
+<title>GTA VI: Leonida Nights</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;overflow:hidden;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh}
-canvas{display:block}
-#ui{position:absolute;top:10px;left:10px;color:#fff;font-size:14px;z-index:10;pointer-events:none}
-#hud{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:20px;color:#fff;font-size:14px;z-index:10;pointer-events:none}
-#minimap{position:absolute;bottom:20px;right:20px;width:150px;height:150px;border:2px solid #ff2e6e;border-radius:4px;z-index:10;pointer-events:none}
-.hud-item{background:rgba(0,0,0,.7);padding:5px 10px;border-radius:4px}
-.wanted{color:#ff2e6e}
-.money{color:#ffd700}
+body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:monospace}
+canvas{border:2px solid #333}
+#hud{position:fixed;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:20px;color:#fff;font-size:14px;z-index:10;background:rgba(0,0,0,0.7);padding:8px 16px;border-radius:8px}
+#hud span{display:flex;align-items:center;gap:4px}
+.wanted{color:#ff4444}
+.money{color:#44ff44}
+.health{color:#44aaff}
+.mission-text{position:fixed;bottom:60px;left:50%;transform:translateX(-50%);color:#ff0;font-size:14px;z-index:10;text-align:center;background:rgba(0,0,0,0.8);padding:6px 14px;border-radius:4px;max-width:80%}
+#story{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:100;display:flex;flex-direction:column;justify-content:center;align-items:center;color:#fff;text-align:center}
+#story h1{font-size:48px;color:#ff6600;margin-bottom:20px}
+#story p{font-size:16px;max-width:600px;line-height:1.6;margin:10px 0}
+#story button{margin-top:30px;padding:12px 40px;font-size:20px;background:#ff6600;border:none;color:#000;cursor:pointer;border-radius:6px;font-weight:bold}
+#story button:hover{background:#ff8833}
+#minimap{position:fixed;bottom:10px;right:10px;width:150px;height:150px;border:2px solid #fff;border-radius:4px;z-index:10;background:rgba(0,0,0,0.6)}
 </style>
 </head>
 <body>
-<canvas id="game"></canvas>
-<div id="ui">GTA VI: Vice City Browser</div>
-<div id="hud">
-  <span class="hud-item money" id="money">$0</span>
-  <span class="hud-item wanted" id="wanted">★</span>
-  <span class="hud-item" id="health">❤️ 100</span>
-  <span class="hud-item" id="speed">0 mph</span>
+
+<div id="story">
+  <h1>LEONIDA NIGHTS</h1>
+  <p>Vice City. The neon never fades, the money never sleeps.</p>
+  <p>You're fresh off the boat. No crew. No cash. No reputation.</p>
+  <p>But you've got wheels and a hunger that won't quit.</p>
+  <p><b>WASD</b> to drive | <b>SPACE</b> to shoot | <b>E</b> to interact | <b>M</b> for map</p>
+  <p style="color:#ff6600">Complete missions. Build your empire. Don't get busted.</p>
+  <button onclick="startGame()">ENTER VICE CITY</button>
 </div>
+
+<div id="hud">
+  <span class="money">💰 $<span id="money">0</span></span>
+  <span class="health">❤️ <span id="hp">100</span></span>
+  <span class="wanted" id="stars">⭐</span>
+  <span id="mission-hud">📋 Free Roam</span>
+</div>
+<div class="mission-text" id="mission-text"></div>
 <canvas id="minimap" width="150" height="150"></canvas>
+<canvas id="game"></canvas>
 
 <script>
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const mm = document.getElementById('minimap');
-const mmCtx = mm.getContext('2d');
+// === AUDIO ENGINE ===
+const AC = new (window.AudioContext||window.webkitAudioContext)();
+function beep(f,d,t='square',v=0.1){const o=AC.createOscillator(),g=AC.createGain();o.type=t;o.frequency.value=f;g.gain.value=v;o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+d);}
+function sfx_shoot(){beep(200,0.05,'sawtooth',0.15);beep(80,0.08,'square',0.1)}
+function sfx_hit(){beep(100,0.1,'sawtooth',0.2);beep(60,0.15,'triangle',0.15)}
+function sfx_cash(){beep(800,0.05,'square',0.1);beep(1200,0.08,'square',0.1)}
+function sfx_siren(){beep(440,0.3,'sawtooth',0.08);setTimeout(()=>beep(550,0.3,'sawtooth',0.08),300)}
+function sfx_explosion(){for(let i=0;i<5;i++)setTimeout(()=>beep(30+Math.random()*80,0.1,'sawtooth',0.3),i*40)}
 
-const W = canvas.width = window.innerWidth;
-const H = canvas.height = window.innerHeight;
-
-// Game state
-const WORLD = { w: 4000, h: 4000 };
-const player = {
-  x: 2000, y: 2000, angle: 0, speed: 0, maxSpeed: 8, accel: 0.3, handling: 0.06,
-  health: 100, money: 0, wanted: 0, invincible: 0
+// === GAME STATE ===
+const GS = {
+  money: 0, hp: 100, maxHp: 100, wanted: 0,
+  x: 400, y: 400, angle: 0, speed: 0,
+  missionIdx: 0, missionPhase: 0, missionTarget: null,
+  cops: [], bullets: [], particles: [], peds: [],
+  buildings: [], roads: [], missionMarkers: [], pickups: [],
+  keys: {}, gameStarted: false, paused: false,
+  mapW: 2000, mapH: 2000
 };
 
-// Input
-const keys = {};
-window.onkeydown = e => { keys[e.key] = true; e.preventDefault(); };
-window.onkeyup = e => { keys[e.key] = false; };
+// Mission definitions
+const MISSIONS = [
+  { name: "Wheels of Fortune", desc: "Steal the sports car at the dealership", reward: 500, type: "steal", x: 800, y: 600 },
+  { name: "Package Run", desc: "Pick up the package and deliver it downtown", reward: 800, type: "deliver", px: 700, py: 300, dx: 1400, dy: 1200 },
+  { name: "Hit & Run", desc: "Take out the target vehicle before it escapes", reward: 1500, type: "kill", x: 1600, y: 800 },
+  { name: "Bank Job", desc: "Rob the bank vault. Watch for cops!", reward: 5000, type: "rob", x: 1000, y: 1000 },
+  { name: "The Heist", desc: "Steal the armored truck and escape the city", reward: 10000, type: "heist", x: 300, y: 1700 },
+];
 
-// Roads
-const roads = [];
-for (let i = 0; i < 12; i++) {
-  roads.push({ x: 200 + i * 300, y: 0, w: 80, h: WORLD.h, dir: 'v' }); // vertical
-  roads.push({ x: 0, y: 200 + i * 300, w: WORLD.w, h: 80, dir: 'h' }); // horizontal
-}
-roads.push({ x: 1850, y: 0, w: 100, h: WORLD.h, dir: 'v' }); // main highway
-roads.push({ x: 0, y: 1850, w: WORLD.w, h: 100, dir: 'h' });
+// === BUILD CITY ===
+function genCity() {
+  const B = GS.buildings, R = GS.roads;
+  // Grid roads
+  for(let x=100; x<GS.mapW; x+=180) R.push({x1:x,y1:0,x2:x,y2:GS.mapH});
+  for(let y=100; y<GS.mapH; y+=180) R.push({x1:0,y1:y,x2:GS.mapW,y2:y});
+  // Diagonal roads
+  R.push({x1:0,y1:0,x2:GS.mapW,y2:GS.mapH});
+  R.push({x1:GS.mapW,y1:0,x2:0,y2:GS.mapH});
 
-// Buildings
-const buildings = [];
-for (let x = 50; x < WORLD.w - 50; x += 150 + Math.random() * 100) {
-  for (let y = 50; y < WORLD.h - 50; y += 150 + Math.random() * 100) {
-    if (roads.some(r => x < r.x + r.w && x + 100 > r.x && y < r.y + r.h && y + 100 > r.y)) continue;
-    const h = 30 + Math.random() * 80;
-    buildings.push({ x, y, w: 60 + Math.random() * 60, h, color: `hsl(${Math.random()*360}, 20%, ${20+Math.random()*30}%)` });
+  // Buildings
+  for(let i=0;i<80;i++){
+    let bx = 50+Math.random()*(GS.mapW-200), by = 50+Math.random()*(GS.mapH-200);
+    let tooClose = false;
+    for(let r of R) {
+      let dist = Math.abs(bx-r.x1) < 80 || Math.abs(by-r.y1) < 80;
+      if(dist) {tooClose=true;break;}
+    }
+    if(!tooClose) B.push({x:bx, y:by, w:40+Math.random()*80, h:40+Math.random()*120, color: `hsl(${Math.random()*60+200},30%,${20+Math.random()*30}%)`});
+  }
+
+  // Spawn pedestrians
+  for(let i=0;i<60;i++){
+    GS.peds.push({x:50+Math.random()*(GS.mapW-100), y:50+Math.random()*(GS.mapH-100),
+      angle:Math.random()*Math.PI*2, speed:0.3+Math.random()*1.5, alive:true,
+      hp:30, type:Math.random()<0.1?'cop':'ped'});
+  }
+
+  // Mission markers
+  for(let m of MISSIONS) {
+    GS.missionMarkers.push({x: m.x||m.px, y: m.y||m.py, active: true, missionIdx: MISSIONS.indexOf(m)});
   }
 }
 
-// Trees
-const trees = [];
-for (let i = 0; i < 200; i++) {
-  const x = Math.random() * WORLD.w, y = Math.random() * WORLD.h;
-  if (roads.some(r => x < r.x + r.w && x + 30 > r.x && y < r.y + r.h && y + 30 > r.y)) continue;
-  if (buildings.some(b => x < b.x + b.w && x + 30 > b.x && y < b.y + b.h && y + 30 > b.y)) continue;
-  trees.push({ x, y, r: 10 + Math.random() * 15, shade: `hsl(120, ${30+Math.random()*40}%, ${20+Math.random()*30}%)` });
+// === PLAYER ===
+function updatePlayer(dt) {
+  let turn = 0, accel = 0;
+  if(GS.keys['a']||GS.keys['ArrowLeft']) turn = -3;
+  if(GS.keys['d']||GS.keys['ArrowRight']) turn = 3;
+  if(GS.keys['w']||GS.keys['ArrowUp']) accel = 200;
+  if(GS.keys['s']||GS.keys['ArrowDown']) accel = -100;
+
+  GS.angle += turn * dt;
+  GS.speed += (accel - GS.speed * 1.5) * dt;
+  GS.speed = Math.max(-80, Math.min(300, GS.speed));
+
+  GS.x += Math.cos(GS.angle) * GS.speed * dt;
+  GS.y += Math.sin(GS.angle) * GS.speed * dt;
+  GS.x = Math.max(10, Math.min(GS.mapW-10, GS.x));
+  GS.y = Math.max(10, Math.min(GS.mapH-10, GS.y));
+
+  // Collision with buildings
+  for(let b of GS.buildings) {
+    if(GS.x > b.x && GS.x < b.x+b.w && GS.y > b.y && GS.y < b.y+b.h) {
+      GS.speed *= -0.5; GS.hp -= 2;
+      GS.x += Math.cos(GS.angle) * -20; GS.y += Math.sin(GS.angle) * -20;
+      GS.particles.push({x:GS.x, y:GS.y, vx:(Math.random()-0.5)*100, vy:(Math.random()-0.5)*100, life:0.3, color:'#ff0'});
+    }
+  }
+
+  // Pickups
+  for(let i=GS.pickups.length-1;i>=0;i--){
+    let p = GS.pickups[i];
+    let dx = GS.x - p.x, dy = GS.y - p.y;
+    if(Math.sqrt(dx*dx+dy*dy) < 25) {
+      GS.money += p.value; GS.hp = Math.min(GS.maxHp, GS.hp + (p.type==='health'?30:0));
+      sfx_cash(); GS.pickups.splice(i,1);
+    }
+  }
+
+  // Pedestrian collision
+  for(let p of GS.peds) {
+    if(!p.alive) continue;
+    let dx = GS.x - p.x, dy = GS.y - p.y;
+    if(Math.sqrt(dx*dx+dy*dy) < 20) {
+      p.alive = false; GS.wanted = Math.min(5, GS.wanted + 1);
+      GS.particles.push({x:p.x, y:p.y, vx:(Math.random()-0.5)*80, vy:(Math.random()-0.5)*80, life:0.5, color:'#f00'});
+      GS.money += 20;
+      sfx_hit();
+    }
+  }
 }
 
-// NPC cars
-const npcCars = [];
-for (let i = 0; i < 40; i++) {
-  const road = roads[Math.floor(Math.random() * roads.length)];
-  npcCars.push({
-    x: road.dir === 'v' ? road.x + road.w / 2 : road.x + Math.random() * road.w,
-    y: road.dir === 'h' ? road.y + road.h / 2 : road.y + Math.random() * road.h,
-    angle: road.dir === 'v' ? (Math.random() > 0.5 ? Math.PI / 2 : -Math.PI / 2) : (Math.random() > 0.5 ? 0 : Math.PI),
-    speed: 1 + Math.random() * 4,
-    color: ['#ff3333','#3333ff','#33ff33','#ffff33','#ff33ff','#33ffff','#ffffff','#ff6633'][Math.floor(Math.random()*8)],
-    road: road.dir
-  });
+// === COPS ===
+function updateCops(dt) {
+  // Spawn cops based on wanted level
+  if(GS.wanted > 0 && GS.cops.length < GS.wanted * 2 && Math.random() < 0.3 * dt) {
+    let a = Math.random()*Math.PI*2, d = 600;
+    GS.cops.push({x: GS.x+Math.cos(a)*d, y: GS.y+Math.sin(a)*d, angle: a, speed: 150+GS.wanted*50});
+    if(GS.cops.length % 3 === 0) sfx_siren();
+  }
+
+  for(let c of GS.cops) {
+    let dx = GS.x - c.x, dy = GS.y - c.y, dist = Math.sqrt(dx*dx+dy*dy);
+    c.angle = Math.atan2(dy, dx);
+    c.x += Math.cos(c.angle) * c.speed * dt;
+    c.y += Math.sin(c.angle) * c.speed * dt;
+
+    if(dist < 30) {
+      GS.hp -= 5 * dt; GS.particles.push({x:GS.x, y:GS.y, vx:(Math.random()-0.5)*60, vy:(Math.random()-0.5)*60, life:0.2, color:'#f44'});
+      if(GS.hp <= 0) { gameOver("BUSTED"); return; }
+    }
+  }
 }
 
-// Police cars
-const police = [];
-function spawnPolice() {
-  if (player.wanted <= 0) return;
-  const r = roads[Math.floor(Math.random() * roads.length)];
-  const p = {
-    x: r.dir === 'v' ? r.x + r.w / 2 : r.x + Math.random() * r.w,
-    y: r.dir === 'h' ? r.y + r.h / 2 : r.y + Math.random() * r.h,
-    angle: 0, speed: 5 + player.wanted * 0.5, road: r.dir,
-    timer: 600
-  };
-  // Place near player
-  const a = Math.random() * Math.PI * 2;
-  p.x = player.x + Math.cos(a) * 400;
-  p.y = player.y + Math.sin(a) * 400;
-  p.x = Math.max(50, Math.min(WORLD.w - 50, p.x));
-  p.y = Math.max(50, Math.min(WORLD.h - 50, p.y));
-  police.push(p);
-}
-
-// Bullets
-const bullets = [];
+// === SHOOTING ===
 function shoot() {
-  bullets.push({
-    x: player.x, y: player.y,
-    vx: Math.cos(player.angle) * 12,
-    vy: Math.sin(player.angle) * 12,
-    life: 40
-  });
-  if (player.wanted < 5) player.wanted = Math.min(5, player.wanted + 1);
+  if(GS.wanted < 3) GS.wanted = Math.max(1, GS.wanted + 1);
+  sfx_shoot();
+  GS.bullets.push({x:GS.x, y:GS.y, vx:Math.cos(GS.angle)*500, vy:Math.sin(GS.angle)*500, life:1.5});
+
+  // Check cop hits
+  for(let i=GS.cops.length-1;i>=0;i--){
+    let dx = GS.x - GS.cops[i].x, dy = GS.y - GS.cops[i].y;
+    if(Math.sqrt(dx*dx+dy*dy) < 300 && Math.abs(Math.atan2(dy,dx)-GS.angle)<0.3) {
+      GS.cops.splice(i,1); GS.money += 100;
+      GS.particles.push({x:GS.cops[i]?.x||GS.x, y:GS.cops[i]?.y||GS.y, vx:(Math.random()-0.5)*120, vy:(Math.random()-0.5)*120, life:0.4, color:'#f80'});
+      sfx_explosion();
+      break;
+    }
+  }
 }
 
-let policeSpawnTimer = 0, lastShot = 0;
+// === MISSIONS ===
+function updateMission() {
+  if(GS.missionIdx >= MISSIONS.length) return;
+  let m = MISSIONS[GS.missionIdx];
+  let targetX = m.x||m.px, targetY = m.y||m.py;
 
-// Camera
-const cam = { x: 0, y: 0 };
-
-// Game loop
-function update() {
-  // Player movement
-  const onRoad = roads.some(r => player.x > r.x && player.x < r.x + r.w && player.y > r.y && player.y < r.y + r.h);
-  const maxSpd = onRoad ? player.maxSpeed : player.maxSpeed * 0.4;
-
-  if (keys['ArrowUp'] || keys['w']) player.speed = Math.min(maxSpd, player.speed + player.accel);
-  else if (keys['ArrowDown'] || keys['s']) player.speed = Math.max(-maxSpd / 2, player.speed - player.accel * 0.7);
-  else player.speed *= 0.94;
-
-  const turnRate = player.handling * (Math.abs(player.speed) > 1 ? 1 : 2);
-  if (keys['ArrowLeft'] || keys['a']) player.angle -= turnRate;
-  if (keys['ArrowRight'] || keys['d']) player.angle += turnRate;
-
-  player.x += Math.cos(player.angle) * player.speed;
-  player.y += Math.sin(player.angle) * player.speed;
-
-  // World bounds
-  player.x = Math.max(30, Math.min(WORLD.w - 30, player.x));
-  player.y = Math.max(30, Math.min(WORLD.h - 30, player.y));
-
-  // Building collision
-  for (const b of buildings) {
-    if (player.x > b.x - 15 && player.x < b.x + b.w + 15 && player.y > b.y - 15 && player.y < b.y + b.h + 15) {
-      if (player.invincible <= 0) {
-        player.health -= Math.abs(player.speed) * 2;
-        player.speed *= -0.5;
-        player.invincible = 30;
-      }
+  if(m.type === 'steal') {
+    let dx = GS.x - targetX, dy = GS.y - targetY;
+    if(Math.sqrt(dx*dx+dy*dy) < 40 && GS.missionPhase === 0) {
+      GS.missionPhase = 1;
+      setMissionText("Get in the car! Press E");
+    }
+    if(GS.missionPhase === 1 && GS.keys['e']) {
+      completeMission();
     }
   }
-  if (player.invincible > 0) player.invincible--;
-
-  // Camera
-  cam.x += (player.x - W / 2 - cam.x) * 0.1;
-  cam.y += (player.y - H / 2 - cam.y) * 0.1;
-
-  // Shoot
-  if (keys[' '] && Date.now() - lastShot > 300) {
-    lastShot = Date.now();
-    shoot();
-  }
-
-  // Bullets
-  for (let i = bullets.length - 1; i >= 0; i--) {
-    const b = bullets[i];
-    b.x += b.vx; b.y += b.vy; b.life--;
-    if (b.life <= 0 || b.x < 0 || b.x > WORLD.w || b.y < 0 || b.y > WORLD.h) { bullets.splice(i, 1); continue; }
-    // Hit police
-    for (let j = police.length - 1; j >= 0; j--) {
-      if (Math.hypot(b.x - police[j].x, b.y - police[j].y) < 25) {
-        police.splice(j, 1);
-        bullets.splice(i, 1);
-        player.money += 50;
-        break;
-      }
+  if(m.type === 'deliver') {
+    if(GS.missionPhase === 0) {
+      let dx = GS.x - m.px, dy = GS.y - m.py;
+      if(Math.sqrt(dx*dx+dy*dy) < 40) { GS.missionPhase = 1; setMissionText("Package collected! Drive to drop-off"); }
+    }
+    if(GS.missionPhase === 1) {
+      let dx = GS.x - m.dx, dy = GS.y - m.dy;
+      if(Math.sqrt(dx*dx+dy*dy) < 40) completeMission();
     }
   }
-
-  // NPC cars
-  for (const c of npcCars) {
-    c.x += Math.cos(c.angle) * c.speed;
-    c.y += Math.sin(c.angle) * c.speed;
-    if (c.x < 0 || c.x > WORLD.w || c.y < 0 || c.y > WORLD.h) {
-      c.angle += Math.PI;
-    }
-    // Slow random turns at intersections
-    if (Math.random() < 0.01) c.angle += (Math.random() - 0.5) * Math.PI / 2;
-    // Collision with player
-    if (Math.hypot(player.x - c.x, player.y - c.y) < 40 && player.invincible <= 0) {
-      player.health -= 5;
-      player.invincible = 20;
+  if(m.type === 'kill') {
+    let dx = GS.x - targetX, dy = GS.y - targetY;
+    if(Math.sqrt(dx*dx+dy*dy) < 300) {
+      GS.missionPhase = Math.min(GS.missionPhase + (0.02), 1);
+      if(GS.missionPhase >= 1) completeMission();
     }
   }
-
-  // Police
-  policeSpawnTimer--;
-  if (policeSpawnTimer <= 0 && player.wanted > 0 && police.length < player.wanted * 3) {
-    spawnPolice();
-    policeSpawnTimer = 180 - player.wanted * 20;
-  }
-  for (let i = police.length - 1; i >= 0; i--) {
-    const p = police[i];
-    const dx = player.x - p.x, dy = player.y - p.y;
-    const targetAngle = Math.atan2(dy, dx);
-    let da = targetAngle - p.angle;
-    while (da > Math.PI) da -= Math.PI * 2;
-    while (da < -Math.PI) da += Math.PI * 2;
-    p.angle += da * 0.05;
-    p.speed = Math.min(8, Math.hypot(dx, dy) * 0.01);
-    p.x += Math.cos(p.angle) * p.speed;
-    p.y += Math.sin(p.angle) * p.speed;
-    p.timer--;
-    if (p.timer <= 0) police.splice(i, 1);
-    // Collision
-    if (Math.hypot(player.x - p.x, player.y - p.y) < 35 && player.invincible <= 0) {
-      player.health -= 15;
-      player.invincible = 40;
-      player.wanted = Math.min(5, player.wanted + 1);
+  if(m.type === 'rob') {
+    let dx = GS.x - targetX, dy = GS.y - targetY;
+    if(Math.sqrt(dx*dx+dy*dy) < 40 && GS.missionPhase === 0) {
+      GS.missionPhase = 1; GS.wanted = Math.min(5, GS.wanted + 3);
+      setMissionText("Alarm triggered! Hold position 5 seconds...");
+      setTimeout(()=>{if(GS.missionIdx===MISSIONS.indexOf(m))completeMission();}, 5000);
     }
   }
-
-  // Wanted decay
-  if (player.wanted > 0 && police.length === 0 && Math.random() < 0.002) player.wanted--;
-  if (player.wanted === 0) police.length = 0;
-
-  // Death
-  if (player.health <= 0) {
-    player.health = 100;
-    player.money = Math.max(0, player.money - 200);
-    player.wanted = 0;
-    player.x = 2000; player.y = 2000;
-    player.speed = 0;
-    police.length = 0;
-    bullets.length = 0;
+  if(m.type === 'heist') {
+    let dx = GS.x - targetX, dy = GS.y - targetY;
+    if(Math.sqrt(dx*dx+dy*dy) < 40 && GS.missionPhase === 0) {
+      GS.missionPhase = 1; GS.wanted = 5;
+      setMissionText("ARMORED TRUCK STOLEN! Escape the city! (drive to edge)");
+    }
+    if(GS.missionPhase === 1 && (GS.x < 50 || GS.x > GS.mapW-50 || GS.y < 50 || GS.y > GS.mapH-50)) {
+      completeMission();
+    }
   }
-
-  document.getElementById('money').textContent = '$' + player.money;
-  document.getElementById('wanted').textContent = '★'.repeat(player.wanted) || '☆';
-  document.getElementById('health').textContent = '❤️ ' + Math.floor(player.health);
-  document.getElementById('speed').textContent = Math.abs(Math.floor(player.speed * 15)) + ' mph';
 }
 
-function draw() {
-  ctx.fillStyle = '#1a5c2a';
-  ctx.fillRect(0, 0, W, H);
+function completeMission() {
+  let m = MISSIONS[GS.missionIdx];
+  GS.money += m.reward; GS.missionPhase = 0; GS.missionIdx++;
+  GS.wanted = Math.max(0, GS.wanted - 2);
+  sfx_cash(); sfx_cash();
+  if(GS.missionIdx < MISSIONS.length) {
+    setMissionText(`✅ ${m.name} complete! +$${m.reward}\nNext: ${MISSIONS[GS.missionIdx].name}`);
+    GS.missionMarkers[GS.missionIdx].active = true;
+  } else {
+    setMissionText("🏆 ALL MISSIONS COMPLETE! You run Vice City now.");
+    GS.money += 50000;
+  }
+  saveGame();
+}
 
-  ctx.save();
-  ctx.translate(-cam.x, -cam.y);
+function setMissionText(t) { document.getElementById('mission-text').textContent = t; }
 
-  // Grass
-  ctx.fillStyle = '#2d5a1e';
-  ctx.fillRect(0, 0, WORLD.w, WORLD.h);
+// === RENDER ===
+function render(ctx, camX, camY) {
+  ctx.fillStyle = '#1a3a1a'; ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
   // Roads
-  for (const r of roads) {
-    ctx.fillStyle = '#333';
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.strokeStyle = '#ffcc00';
-    ctx.lineWidth = 2;
-    if (r.dir === 'v') ctx.strokeRect(r.x + r.w/2 - 1, r.y, 2, r.h);
-    else ctx.strokeRect(r.x, r.y + r.h/2 - 1, r.w, 2);
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 3;
+  for(let r of GS.roads) {
+    ctx.beginPath(); ctx.moveTo(r.x1-camX, r.y1-camY); ctx.lineTo(r.x2-camX, r.y2-camY); ctx.stroke();
+    // Dashed center line
+    ctx.strokeStyle = '#ff0'; ctx.lineWidth = 1;
+    ctx.setLineDash([12, 20]); ctx.stroke();
+    ctx.setLineDash([]); ctx.strokeStyle = '#444'; ctx.lineWidth = 3;
   }
 
   // Buildings
-  for (const b of buildings) {
+  for(let b of GS.buildings) {
     ctx.fillStyle = b.color;
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.strokeStyle = '#111';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.fillRect(b.x-camX, b.y-camY, b.w, b.h);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+    ctx.strokeRect(b.x-camX, b.y-camY, b.w, b.h);
     // Windows
-    ctx.fillStyle = '#ffff88';
-    for (let wy = b.y + 10; wy < b.y + b.h - 8; wy += 16) {
-      for (let wx = b.x + 8; wx < b.x + b.w - 8; wx += 14) {
-        ctx.fillRect(wx, wy, 5, 5);
-      }
-    }
+    ctx.fillStyle = '#ff8';
+    for(let wy=b.y+8; wy<b.y+b.h-8; wy+=14)
+      for(let wx=b.x+6; wx<b.x+b.w-6; wx+=14)
+        ctx.fillRect(wx-camX, wy-camY, 5, 8);
   }
 
-  // Trees
-  for (const t of trees) {
-    ctx.fillStyle = t.shade;
-    ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#4a2f1e';
-    ctx.fillRect(t.x - 2, t.y, 4, t.r);
+  // Mission markers
+  if(GS.missionIdx < MISSIONS.length) {
+    let mx = MISSIONS[GS.missionIdx].x||MISSIONS[GS.missionIdx].px;
+    let my = MISSIONS[GS.missionIdx].y||MISSIONS[GS.missionIdx].py;
+    let pulse = Math.sin(Date.now()/300)*5;
+    ctx.fillStyle = '#ff0'; ctx.beginPath();
+    ctx.arc(mx-camX, my-camY, 30+pulse, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.font = '12px monospace';
+    ctx.fillText('★', mx-camX-4, my-camY+4);
   }
 
-  // NPC Cars
-  for (const c of npcCars) {
-    ctx.save();
-    ctx.translate(c.x, c.y);
-    ctx.rotate(c.angle);
-    ctx.fillStyle = c.color;
-    ctx.fillRect(-20, -10, 40, 20);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(-18, -8, 12, 7);
-    ctx.fillRect(6, -8, 12, 7);
-    ctx.fillStyle = '#ff3333';
-    ctx.fillRect(20, -6, 6, 4);
-    ctx.fillRect(20, 2, 6, 4);
-    ctx.restore();
+  // Pedestrians
+  for(let p of GS.peds) {
+    if(!p.alive) continue;
+    ctx.fillStyle = p.type==='cop'?'#44f':'#fff';
+    ctx.fillRect(p.x-camX-4, p.y-camY-4, 8, 8);
+    ctx.fillStyle = p.type==='cop'?'#00f':'#f88';
+    ctx.beginPath(); ctx.arc(p.x-camX, p.y-camY, 3, 0, Math.PI*2); ctx.fill();
+  }
+  // Update ped AI
+  for(let p of GS.peds) {
+    if(!p.alive) continue;
+    p.angle += (Math.random()-0.5)*0.5;
+    p.x += Math.cos(p.angle)*p.speed*0.016;
+    p.y += Math.sin(p.angle)*p.speed*0.016;
+    p.x = Math.max(10, Math.min(GS.mapW-10, p.x));
+    p.y = Math.max(10, Math.min(GS.mapH-10, p.y));
   }
 
-  // Police
-  for (const p of police) {
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    ctx.rotate(p.angle);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(-22, -11, 44, 22);
-    ctx.fillStyle = '#003399';
-    ctx.fillRect(-22, -11, 22, 11);
-    ctx.fillStyle = '#111';
-    ctx.fillRect(-20, -9, 10, 8);
-    ctx.fillRect(-20, 1, 10, 8);
-    ctx.fillRect(10, -9, 10, 8);
-    ctx.fillRect(10, 1, 10, 8);
-    ctx.fillStyle = '#ff0000';
-    ctx.fillRect(21, -7, 5, 5);
-    ctx.fillRect(21, 2, 5, 5);
-    // Siren
-    ctx.fillStyle = Math.floor(Date.now() / 200) % 2 === 0 ? '#ff0000' : '#0000ff';
-    ctx.fillRect(-24, -2, 3, 5);
+  // Pickups
+  for(let p of GS.pickups) {
+    ctx.fillStyle = p.type==='health'?'#f44':'#4f4';
+    ctx.fillRect(p.x-camX-6, p.y-camY-6, 12, 12);
+    ctx.fillStyle = '#fff'; ctx.font = '8px monospace';
+    ctx.fillText(p.type==='health'?'+':'$', p.x-camX-4, p.y-camY+3);
+  }
+
+  // Cops
+  for(let c of GS.cops) {
+    ctx.save(); ctx.translate(c.x-camX, c.y-camY); ctx.rotate(c.angle);
+    ctx.fillStyle = '#004'; ctx.fillRect(-12,-6,24,12);
+    ctx.fillStyle = '#00f'; ctx.fillRect(-10,-4,8,8);
+    ctx.fillStyle = '#f00'; ctx.fillRect(6,-4,6,3);
     ctx.restore();
   }
 
   // Bullets
-  ctx.fillStyle = '#ffdd00';
-  for (const b of bullets) {
-    ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI * 2); ctx.fill();
+  for(let b of GS.bullets) {
+    ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(b.x-camX, b.y-camY, 3, 0, Math.PI*2); ctx.fill();
+    b.x += b.vx * 0.016; b.y += b.vy * 0.016; b.life -= 0.016;
   }
+  GS.bullets = GS.bullets.filter(b=>b.life>0 && b.x>0 && b.x<GS.mapW && b.y>0 && b.y<GS.mapH);
 
   // Player car
-  ctx.save();
-  ctx.translate(player.x, player.y);
-  ctx.rotate(player.angle);
-  const alpha = player.invincible > 0 ? 0.5 : 1;
-  ctx.globalAlpha = alpha;
-  // Car body
-  ctx.fillStyle = '#ff2e6e';
-  ctx.fillRect(-25, -13, 50, 26);
-  ctx.fillStyle = '#cc1144';
-  ctx.fillRect(-23, -11, 22, 11);
-  // Windshield
-  ctx.fillStyle = '#88ccff';
-  ctx.fillRect(-15, -11, 8, 11);
-  ctx.fillRect(7, -11, 8, 11);
-  // Wheels
-  ctx.fillStyle = '#111';
-  ctx.fillRect(-22, -15, 12, 5);
-  ctx.fillRect(-22, 10, 12, 5);
-  ctx.fillRect(10, -15, 12, 5);
-  ctx.fillRect(10, 10, 12, 5);
-  // Lights
-  ctx.fillStyle = '#ffaa00';
-  ctx.fillRect(24, -9, 4, 5);
-  ctx.fillRect(24, 4, 4, 5);
-  // Exhaust
-  ctx.fillStyle = player.speed > 3 ? '#ff6600' : '#333';
-  ctx.fillRect(-27, -3, 3, 6);
+  ctx.save(); ctx.translate(GS.x-camX, GS.y-camY); ctx.rotate(GS.angle);
+  ctx.fillStyle = '#c30'; ctx.fillRect(-16,-8,32,16);
+  ctx.fillStyle = '#600'; ctx.fillRect(-12,-6,4,12);
+  ctx.fillStyle = '#fff'; ctx.fillRect(8,-6,4,4); ctx.fillRect(-6,-6,4,4);
+  ctx.fillStyle = '#ff0'; ctx.fillRect(14,-3,3,3); ctx.fillRect(-17,-3,3,3);
+  // Exhaust particles
+  if(GS.speed > 50 && Math.random()<0.5) {
+    GS.particles.push({x:GS.x-Math.cos(GS.angle)*20, y:GS.y-Math.sin(GS.angle)*20,
+      vx:-Math.cos(GS.angle)*40+(Math.random()-0.5)*20, vy:-Math.sin(GS.angle)*40+(Math.random()-0.5)*20, life:0.3, color:'#888'});
+  }
+  ctx.restore();
+
+  // Particles
+  for(let i=GS.particles.length-1;i>=0;i--) {
+    let p = GS.particles[i];
+    ctx.fillStyle = p.color; ctx.globalAlpha = p.life*3;
+    ctx.fillRect(p.x-camX-2, p.y-camY-2, 4, 4);
+    p.x += p.vx * 0.016; p.y += p.vy * 0.016; p.life -= 0.016;
+    if(p.life <= 0) GS.particles.splice(i,1);
+  }
   ctx.globalAlpha = 1;
-  ctx.restore();
-
-  ctx.restore();
-
-  // UI over player
-  // Crosshair
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth = 1;
-  const cx = W / 2, cy = H / 2;
-  ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx - 20, cy); ctx.lineTo(cx - 10, cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx + 10, cy); ctx.lineTo(cx + 20, cy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx, cy - 20); ctx.lineTo(cx, cy - 10); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx, cy + 10); ctx.lineTo(cx, cy + 20); ctx.stroke();
 
   // Minimap
-  mmCtx.fillStyle = '#111';
-  mmCtx.fillRect(0, 0, 150, 150);
-  const scale = 150 / WORLD.w;
-  // Roads on minimap
-  mmCtx.fillStyle = '#444';
-  for (const r of roads) {
-    mmCtx.fillRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
+  let mm = document.getElementById('minimap');
+  let mctx = mm.getContext('2d');
+  let s = 150/GS.mapW;
+  mctx.fillStyle = '#000'; mctx.fillRect(0,0,150,150);
+  mctx.fillStyle = '#333'; mctx.fillRect(0,0,150,150);
+  // Player dot
+  mctx.fillStyle = '#fff'; mctx.fillRect(GS.x*s-1, GS.y*s-1, 3, 3);
+  // Cops
+  mctx.fillStyle = '#00f';
+  for(let c of GS.cops) mctx.fillRect(c.x*s-1, c.y*s-1, 2, 2);
+  // Mission marker
+  if(GS.missionIdx < MISSIONS.length) {
+    let mx = MISSIONS[GS.missionIdx].x||MISSIONS[GS.missionIdx].px;
+    let my = MISSIONS[GS.missionIdx].y||MISSIONS[GS.missionIdx].py;
+    mctx.fillStyle = '#ff0'; mctx.fillRect(mx*s-2, my*s-2, 4, 4);
   }
-  // Player
-  mmCtx.fillStyle = '#ff2e6e';
-  mmCtx.fillRect(player.x * scale - 2, player.y * scale - 2, 4, 4);
-  // Police
-  mmCtx.fillStyle = '#0033ff';
-  for (const p of police) mmCtx.fillRect(p.x * scale - 1, p.y * scale - 1, 3, 3);
-  // NPC
-  mmCtx.fillStyle = '#888';
-  for (const c of npcCars.slice(0, 10)) mmCtx.fillRect(c.x * scale - 1, c.y * scale - 1, 2, 2);
 }
 
-function loop() {
-  update();
-  draw();
-  requestAnimationFrame(loop);
+// === HUD UPDATE ===
+function updateHUD() {
+  document.getElementById('money').textContent = GS.money.toLocaleString();
+  document.getElementById('hp').textContent = Math.max(0,Math.round(GS.hp));
+  let stars = '';
+  for(let i=0;i<GS.wanted;i++) stars+='⭐';
+  document.getElementById('stars').textContent = stars||'☆';
+  if(GS.missionIdx < MISSIONS.length) {
+    document.getElementById('mission-hud').textContent = `📋 ${MISSIONS[GS.missionIdx].name}`;
+  } else {
+    document.getElementById('mission-hud').textContent = '🏆 Complete';
+  }
 }
 
-loop();
+// === GAME LOOP ===
+let lastTime = 0;
+function gameLoop(t) {
+  if(!GS.gameStarted || GS.paused) { requestAnimationFrame(gameLoop); return; }
+  let dt = Math.min((t - lastTime)/1000, 0.05); lastTime = t;
+  if(dt <= 0) { requestAnimationFrame(gameLoop); return; }
+
+  updatePlayer(dt);
+  updateCops(dt);
+  updateMission();
+  updateHUD();
+
+  // Camera
+  let camX = GS.x - 400, camY = GS.y - 300;
+  let canvas = document.getElementById('game');
+  canvas.width = 800; canvas.height = 600;
+  let ctx = canvas.getContext('2d');
+  render(ctx, camX, camY);
+
+  // Death
+  if(GS.hp <= 0) gameOver("WASTED");
+
+  requestAnimationFrame(gameLoop);
+}
+
+function gameOver(reason) {
+  GS.paused = true;
+  let c = document.getElementById('game').getContext('2d');
+  c.fillStyle = 'rgba(255,0,0,0.7)'; c.fillRect(0,0,800,600);
+  c.fillStyle = '#fff'; c.font = '48px monospace'; c.textAlign = 'center';
+  c.fillText(reason, 400, 280);
+  c.font = '16px monospace';
+  c.fillText('Press R to restart', 400, 330);
+}
+
+function saveGame() {
+  try { localStorage.setItem('gta6_save', JSON.stringify({
+    money: GS.money, missionIdx: GS.missionIdx, wanted: GS.wanted, x: GS.x, y: GS.y
+  })); } catch(e){}
+}
+function loadGame() {
+  try {
+    let d = JSON.parse(localStorage.getItem('gta6_save'));
+    if(d) { GS.money=d.money; GS.missionIdx=d.missionIdx; GS.wanted=d.wanted; GS.x=d.x||400; GS.y=d.y||400; }
+  } catch(e){}
+}
+
+function startGame() {
+  document.getElementById('story').style.display = 'none';
+  loadGame();
+  GS.gameStarted = true;
+  lastTime = performance.now();
+  setMissionText(`${MISSIONS[GS.missionIdx]?.desc||'Free roam'}`);
+  requestAnimationFrame(gameLoop);
+}
+
+// Input
+window.addEventListener('keydown', e => { GS.keys[e.key.toLowerCase()] = true;
+  if(e.key === ' ' && GS.gameStarted) shoot();
+  if(e.key === 'r' && GS.paused) { GS.hp=GS.maxHp; GS.wanted=0; GS.cops=[]; GS.paused=false; }
+  if(e.key === 'm') { // spawn pickup
+    GS.pickups.push({x:GS.x+Math.cos(GS.angle)*50, y:GS.y+Math.sin(GS.angle)*50,
+      value:100+Math.floor(Math.random()*500), type:Math.random()<0.3?'health':'cash'});
+  }
+});
+window.addEventListener('keyup', e => { GS.keys[e.key.toLowerCase()] = false; });
+
+genCity();
 </script>
 </body>
 </html>
