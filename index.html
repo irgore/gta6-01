@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GTA VI — Vice City Browser</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{display:block}
+#ui{position:absolute;top:10px;left:10px;color:#fff;font-size:14px;z-index:10;pointer-events:none}
+#hud{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:20px;color:#fff;font-size:14px;z-index:10;pointer-events:none}
+#minimap{position:absolute;bottom:20px;right:20px;width:150px;height:150px;border:2px solid #ff2e6e;border-radius:4px;z-index:10;pointer-events:none}
+.hud-item{background:rgba(0,0,0,.7);padding:5px 10px;border-radius:4px}
+.wanted{color:#ff2e6e}
+.money{color:#ffd700}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">GTA VI: Vice City Browser</div>
+<div id="hud">
+  <span class="hud-item money" id="money">$0</span>
+  <span class="hud-item wanted" id="wanted">★</span>
+  <span class="hud-item" id="health">❤️ 100</span>
+  <span class="hud-item" id="speed">0 mph</span>
+</div>
+<canvas id="minimap" width="150" height="150"></canvas>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const mm = document.getElementById('minimap');
+const mmCtx = mm.getContext('2d');
+
+const W = canvas.width = window.innerWidth;
+const H = canvas.height = window.innerHeight;
+
+// Game state
+const WORLD = { w: 4000, h: 4000 };
+const player = {
+  x: 2000, y: 2000, angle: 0, speed: 0, maxSpeed: 8, accel: 0.3, handling: 0.06,
+  health: 100, money: 0, wanted: 0, invincible: 0
+};
+
+// Input
+const keys = {};
+window.onkeydown = e => { keys[e.key] = true; e.preventDefault(); };
+window.onkeyup = e => { keys[e.key] = false; };
+
+// Roads
+const roads = [];
+for (let i = 0; i < 12; i++) {
+  roads.push({ x: 200 + i * 300, y: 0, w: 80, h: WORLD.h, dir: 'v' }); // vertical
+  roads.push({ x: 0, y: 200 + i * 300, w: WORLD.w, h: 80, dir: 'h' }); // horizontal
+}
+roads.push({ x: 1850, y: 0, w: 100, h: WORLD.h, dir: 'v' }); // main highway
+roads.push({ x: 0, y: 1850, w: WORLD.w, h: 100, dir: 'h' });
+
+// Buildings
+const buildings = [];
+for (let x = 50; x < WORLD.w - 50; x += 150 + Math.random() * 100) {
+  for (let y = 50; y < WORLD.h - 50; y += 150 + Math.random() * 100) {
+    if (roads.some(r => x < r.x + r.w && x + 100 > r.x && y < r.y + r.h && y + 100 > r.y)) continue;
+    const h = 30 + Math.random() * 80;
+    buildings.push({ x, y, w: 60 + Math.random() * 60, h, color: `hsl(${Math.random()*360}, 20%, ${20+Math.random()*30}%)` });
+  }
+}
+
+// Trees
+const trees = [];
+for (let i = 0; i < 200; i++) {
+  const x = Math.random() * WORLD.w, y = Math.random() * WORLD.h;
+  if (roads.some(r => x < r.x + r.w && x + 30 > r.x && y < r.y + r.h && y + 30 > r.y)) continue;
+  if (buildings.some(b => x < b.x + b.w && x + 30 > b.x && y < b.y + b.h && y + 30 > b.y)) continue;
+  trees.push({ x, y, r: 10 + Math.random() * 15, shade: `hsl(120, ${30+Math.random()*40}%, ${20+Math.random()*30}%)` });
+}
+
+// NPC cars
+const npcCars = [];
+for (let i = 0; i < 40; i++) {
+  const road = roads[Math.floor(Math.random() * roads.length)];
+  npcCars.push({
+    x: road.dir === 'v' ? road.x + road.w / 2 : road.x + Math.random() * road.w,
+    y: road.dir === 'h' ? road.y + road.h / 2 : road.y + Math.random() * road.h,
+    angle: road.dir === 'v' ? (Math.random() > 0.5 ? Math.PI / 2 : -Math.PI / 2) : (Math.random() > 0.5 ? 0 : Math.PI),
+    speed: 1 + Math.random() * 4,
+    color: ['#ff3333','#3333ff','#33ff33','#ffff33','#ff33ff','#33ffff','#ffffff','#ff6633'][Math.floor(Math.random()*8)],
+    road: road.dir
+  });
+}
+
+// Police cars
+const police = [];
+function spawnPolice() {
+  if (player.wanted <= 0) return;
+  const r = roads[Math.floor(Math.random() * roads.length)];
+  const p = {
+    x: r.dir === 'v' ? r.x + r.w / 2 : r.x + Math.random() * r.w,
+    y: r.dir === 'h' ? r.y + r.h / 2 : r.y + Math.random() * r.h,
+    angle: 0, speed: 5 + player.wanted * 0.5, road: r.dir,
+    timer: 600
+  };
+  // Place near player
+  const a = Math.random() * Math.PI * 2;
+  p.x = player.x + Math.cos(a) * 400;
+  p.y = player.y + Math.sin(a) * 400;
+  p.x = Math.max(50, Math.min(WORLD.w - 50, p.x));
+  p.y = Math.max(50, Math.min(WORLD.h - 50, p.y));
+  police.push(p);
+}
+
+// Bullets
+const bullets = [];
+function shoot() {
+  bullets.push({
+    x: player.x, y: player.y,
+    vx: Math.cos(player.angle) * 12,
+    vy: Math.sin(player.angle) * 12,
+    life: 40
+  });
+  if (player.wanted < 5) player.wanted = Math.min(5, player.wanted + 1);
+}
+
+let policeSpawnTimer = 0, lastShot = 0;
+
+// Camera
+const cam = { x: 0, y: 0 };
+
+// Game loop
+function update() {
+  // Player movement
+  const onRoad = roads.some(r => player.x > r.x && player.x < r.x + r.w && player.y > r.y && player.y < r.y + r.h);
+  const maxSpd = onRoad ? player.maxSpeed : player.maxSpeed * 0.4;
+
+  if (keys['ArrowUp'] || keys['w']) player.speed = Math.min(maxSpd, player.speed + player.accel);
+  else if (keys['ArrowDown'] || keys['s']) player.speed = Math.max(-maxSpd / 2, player.speed - player.accel * 0.7);
+  else player.speed *= 0.94;
+
+  const turnRate = player.handling * (Math.abs(player.speed) > 1 ? 1 : 2);
+  if (keys['ArrowLeft'] || keys['a']) player.angle -= turnRate;
+  if (keys['ArrowRight'] || keys['d']) player.angle += turnRate;
+
+  player.x += Math.cos(player.angle) * player.speed;
+  player.y += Math.sin(player.angle) * player.speed;
+
+  // World bounds
+  player.x = Math.max(30, Math.min(WORLD.w - 30, player.x));
+  player.y = Math.max(30, Math.min(WORLD.h - 30, player.y));
+
+  // Building collision
+  for (const b of buildings) {
+    if (player.x > b.x - 15 && player.x < b.x + b.w + 15 && player.y > b.y - 15 && player.y < b.y + b.h + 15) {
+      if (player.invincible <= 0) {
+        player.health -= Math.abs(player.speed) * 2;
+        player.speed *= -0.5;
+        player.invincible = 30;
+      }
+    }
+  }
+  if (player.invincible > 0) player.invincible--;
+
+  // Camera
+  cam.x += (player.x - W / 2 - cam.x) * 0.1;
+  cam.y += (player.y - H / 2 - cam.y) * 0.1;
+
+  // Shoot
+  if (keys[' '] && Date.now() - lastShot > 300) {
+    lastShot = Date.now();
+    shoot();
+  }
+
+  // Bullets
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx; b.y += b.vy; b.life--;
+    if (b.life <= 0 || b.x < 0 || b.x > WORLD.w || b.y < 0 || b.y > WORLD.h) { bullets.splice(i, 1); continue; }
+    // Hit police
+    for (let j = police.length - 1; j >= 0; j--) {
+      if (Math.hypot(b.x - police[j].x, b.y - police[j].y) < 25) {
+        police.splice(j, 1);
+        bullets.splice(i, 1);
+        player.money += 50;
+        break;
+      }
+    }
+  }
+
+  // NPC cars
+  for (const c of npcCars) {
+    c.x += Math.cos(c.angle) * c.speed;
+    c.y += Math.sin(c.angle) * c.speed;
+    if (c.x < 0 || c.x > WORLD.w || c.y < 0 || c.y > WORLD.h) {
+      c.angle += Math.PI;
+    }
+    // Slow random turns at intersections
+    if (Math.random() < 0.01) c.angle += (Math.random() - 0.5) * Math.PI / 2;
+    // Collision with player
+    if (Math.hypot(player.x - c.x, player.y - c.y) < 40 && player.invincible <= 0) {
+      player.health -= 5;
+      player.invincible = 20;
+    }
+  }
+
+  // Police
+  policeSpawnTimer--;
+  if (policeSpawnTimer <= 0 && player.wanted > 0 && police.length < player.wanted * 3) {
+    spawnPolice();
+    policeSpawnTimer = 180 - player.wanted * 20;
+  }
+  for (let i = police.length - 1; i >= 0; i--) {
+    const p = police[i];
+    const dx = player.x - p.x, dy = player.y - p.y;
+    const targetAngle = Math.atan2(dy, dx);
+    let da = targetAngle - p.angle;
+    while (da > Math.PI) da -= Math.PI * 2;
+    while (da < -Math.PI) da += Math.PI * 2;
+    p.angle += da * 0.05;
+    p.speed = Math.min(8, Math.hypot(dx, dy) * 0.01);
+    p.x += Math.cos(p.angle) * p.speed;
+    p.y += Math.sin(p.angle) * p.speed;
+    p.timer--;
+    if (p.timer <= 0) police.splice(i, 1);
+    // Collision
+    if (Math.hypot(player.x - p.x, player.y - p.y) < 35 && player.invincible <= 0) {
+      player.health -= 15;
+      player.invincible = 40;
+      player.wanted = Math.min(5, player.wanted + 1);
+    }
+  }
+
+  // Wanted decay
+  if (player.wanted > 0 && police.length === 0 && Math.random() < 0.002) player.wanted--;
+  if (player.wanted === 0) police.length = 0;
+
+  // Death
+  if (player.health <= 0) {
+    player.health = 100;
+    player.money = Math.max(0, player.money - 200);
+    player.wanted = 0;
+    player.x = 2000; player.y = 2000;
+    player.speed = 0;
+    police.length = 0;
+    bullets.length = 0;
+  }
+
+  document.getElementById('money').textContent = '$' + player.money;
+  document.getElementById('wanted').textContent = '★'.repeat(player.wanted) || '☆';
+  document.getElementById('health').textContent = '❤️ ' + Math.floor(player.health);
+  document.getElementById('speed').textContent = Math.abs(Math.floor(player.speed * 15)) + ' mph';
+}
+
+function draw() {
+  ctx.fillStyle = '#1a5c2a';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(-cam.x, -cam.y);
+
+  // Grass
+  ctx.fillStyle = '#2d5a1e';
+  ctx.fillRect(0, 0, WORLD.w, WORLD.h);
+
+  // Roads
+  for (const r of roads) {
+    ctx.fillStyle = '#333';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 2;
+    if (r.dir === 'v') ctx.strokeRect(r.x + r.w/2 - 1, r.y, 2, r.h);
+    else ctx.strokeRect(r.x, r.y + r.h/2 - 1, r.w, 2);
+  }
+
+  // Buildings
+  for (const b of buildings) {
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    // Windows
+    ctx.fillStyle = '#ffff88';
+    for (let wy = b.y + 10; wy < b.y + b.h - 8; wy += 16) {
+      for (let wx = b.x + 8; wx < b.x + b.w - 8; wx += 14) {
+        ctx.fillRect(wx, wy, 5, 5);
+      }
+    }
+  }
+
+  // Trees
+  for (const t of trees) {
+    ctx.fillStyle = t.shade;
+    ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#4a2f1e';
+    ctx.fillRect(t.x - 2, t.y, 4, t.r);
+  }
+
+  // NPC Cars
+  for (const c of npcCars) {
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.angle);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(-20, -10, 40, 20);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-18, -8, 12, 7);
+    ctx.fillRect(6, -8, 12, 7);
+    ctx.fillStyle = '#ff3333';
+    ctx.fillRect(20, -6, 6, 4);
+    ctx.fillRect(20, 2, 6, 4);
+    ctx.restore();
+  }
+
+  // Police
+  for (const p of police) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-22, -11, 44, 22);
+    ctx.fillStyle = '#003399';
+    ctx.fillRect(-22, -11, 22, 11);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-20, -9, 10, 8);
+    ctx.fillRect(-20, 1, 10, 8);
+    ctx.fillRect(10, -9, 10, 8);
+    ctx.fillRect(10, 1, 10, 8);
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(21, -7, 5, 5);
+    ctx.fillRect(21, 2, 5, 5);
+    // Siren
+    ctx.fillStyle = Math.floor(Date.now() / 200) % 2 === 0 ? '#ff0000' : '#0000ff';
+    ctx.fillRect(-24, -2, 3, 5);
+    ctx.restore();
+  }
+
+  // Bullets
+  ctx.fillStyle = '#ffdd00';
+  for (const b of bullets) {
+    ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Player car
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.rotate(player.angle);
+  const alpha = player.invincible > 0 ? 0.5 : 1;
+  ctx.globalAlpha = alpha;
+  // Car body
+  ctx.fillStyle = '#ff2e6e';
+  ctx.fillRect(-25, -13, 50, 26);
+  ctx.fillStyle = '#cc1144';
+  ctx.fillRect(-23, -11, 22, 11);
+  // Windshield
+  ctx.fillStyle = '#88ccff';
+  ctx.fillRect(-15, -11, 8, 11);
+  ctx.fillRect(7, -11, 8, 11);
+  // Wheels
+  ctx.fillStyle = '#111';
+  ctx.fillRect(-22, -15, 12, 5);
+  ctx.fillRect(-22, 10, 12, 5);
+  ctx.fillRect(10, -15, 12, 5);
+  ctx.fillRect(10, 10, 12, 5);
+  // Lights
+  ctx.fillStyle = '#ffaa00';
+  ctx.fillRect(24, -9, 4, 5);
+  ctx.fillRect(24, 4, 4, 5);
+  // Exhaust
+  ctx.fillStyle = player.speed > 3 ? '#ff6600' : '#333';
+  ctx.fillRect(-27, -3, 3, 6);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  ctx.restore();
+
+  // UI over player
+  // Crosshair
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
+  const cx = W / 2, cy = H / 2;
+  ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - 20, cy); ctx.lineTo(cx - 10, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx + 10, cy); ctx.lineTo(cx + 20, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy - 20); ctx.lineTo(cx, cy - 10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy + 10); ctx.lineTo(cx, cy + 20); ctx.stroke();
+
+  // Minimap
+  mmCtx.fillStyle = '#111';
+  mmCtx.fillRect(0, 0, 150, 150);
+  const scale = 150 / WORLD.w;
+  // Roads on minimap
+  mmCtx.fillStyle = '#444';
+  for (const r of roads) {
+    mmCtx.fillRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
+  }
+  // Player
+  mmCtx.fillStyle = '#ff2e6e';
+  mmCtx.fillRect(player.x * scale - 2, player.y * scale - 2, 4, 4);
+  // Police
+  mmCtx.fillStyle = '#0033ff';
+  for (const p of police) mmCtx.fillRect(p.x * scale - 1, p.y * scale - 1, 3, 3);
+  // NPC
+  mmCtx.fillStyle = '#888';
+  for (const c of npcCars.slice(0, 10)) mmCtx.fillRect(c.x * scale - 1, c.y * scale - 1, 2, 2);
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
